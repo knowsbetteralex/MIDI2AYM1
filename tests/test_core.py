@@ -93,6 +93,27 @@ class ConverterTests(unittest.TestCase):
             self.assertTrue(render_wav(frames, self.cfg.clock).startswith(b'RIFF'))
             self.assertEqual(decode_aym1(data)[0], frames)
 
+    def test_cli_preset_keeps_clock_and_loop(self):
+        from midi2aym1.__main__ import main as cli_main
+        import json
+        mf = mido.MidiFile(ticks_per_beat=480, type=0)
+        track = mido.MidiTrack()
+        mf.tracks.append(track)
+        track.extend([mido.Message('note_on', note=60, velocity=100, time=0),
+                      mido.Message('note_off', note=60, velocity=0, time=480)])
+        with tempfile.TemporaryDirectory() as tmp:
+            src, preset, dest = (Path(tmp) / name for name in ('in.mid', 'preset.json', 'out.aym'))
+            mf.save(str(src))
+            cfg = Settings(clock=1_773_400, loop=True)
+            preset.write_text(json.dumps(cfg.to_dict()), encoding='utf8')
+            cli_main([str(src), '--preset', str(preset), '-o', str(dest)])
+            _, hdr = decode_aym1(dest.read_bytes())
+            self.assertEqual(hdr['clock_hz'], 1_773_400)
+            self.assertTrue(hdr['loop'])
+            cli_main([str(src), '--preset', str(preset), '--no-loop', '-o', str(dest)])
+            _, hdr2 = decode_aym1(dest.read_bytes())
+            self.assertFalse(hdr2['loop'])
+
     def test_reject_bad_stream(self):
         x = encode_aym1([[0,0,0,0,0,0,0,63,0,0,0,0,0,0]], 2000000)
         with self.assertRaises(ValueError):

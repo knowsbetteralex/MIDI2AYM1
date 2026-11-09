@@ -30,7 +30,7 @@ python -m midi2aym1 input.mid -o track.aym --clock 2000000 --loop --overflow ste
 python -m midi2aym1 input.mid --preset my_kit.json --wav
 ```
 
-Configuration: `--clock`, `--loop`, `--overflow {steal,drop}`, `--percussion {noise,off}`, `--preset file.json`, `--wav`, `--csv`. CLI options override matching preset settings. A full AYM1 blob is emitted, ready for:
+Configuration: `--clock`, `--loop`/`--no-loop`, `--overflow {steal,drop}`, `--percussion {noise,off}`, `--preset file.json`, `--wav`, `--csv`. CLI options override matching preset settings. A full AYM1 blob is emitted, ready for:
 
 ```asm
 AY_MUSIC_GAME:

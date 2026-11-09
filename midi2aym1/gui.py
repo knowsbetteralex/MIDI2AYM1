@@ -75,6 +75,7 @@ class Window:
         self.path: Path | None = None
         self.player = Player()
         self.busy = False
+        self.play_generation = 0
         self.status = tk.StringVar()
         self.csv_var = tk.BooleanVar(value=False)
         self.wav_var = tk.BooleanVar(value=True)
@@ -100,7 +101,7 @@ class Window:
         toolbar = ttk.Frame(root)
         toolbar.pack(fill='x', pady=(0, 6))
         for key, cb in [('open', self.open), ('convert', lambda: self.run('convert')),
-                        ('play', lambda: self.run('play')), ('stop', self.player.stop),
+                        ('play', lambda: self.run('play')), ('stop', self.stop),
                         ('export', lambda: self.run('export')), ('help', self.help)]:
             ttk.Button(toolbar, text=self.tr(key), command=cb).pack(side='left', padx=(0, 5))
         ttk.Label(toolbar, text=self.tr('lang') + ':').pack(side='left', padx=(12, 3))
@@ -264,6 +265,11 @@ class Window:
             messagebox.showerror(self.tr('error'), str(exc))
             return None
 
+    def stop(self):
+        # A stop during lengthy conversion cancels the pending preview too.
+        self.play_generation += 1
+        self.player.stop()
+
     def open(self):
         filename = filedialog.askopenfilename(filetypes=[('MIDI', '*.mid *.midi'), ('All files', '*.*')])
         if filename:
@@ -283,6 +289,8 @@ class Window:
             messagebox.showerror(self.tr('error'), str(exc))
             return
         output = None
+        source = self.path
+        token = self.play_generation
         if action == 'export':
             filename = filedialog.asksaveasfilename(defaultextension='.aym', initialfile=self.path.stem + '.aym',
                                                      filetypes=[('AYM1', '*.aym')])
@@ -295,21 +303,21 @@ class Window:
         self.status.set(self.tr('working'))
         def work():
             try:
-                blob, frames, report = convert(self.path, cfg)
+                blob, frames, report = convert(source, cfg)
                 pcm = render_pcm(frames, cfg.clock) if action == 'play' else None
                 wav = render_wav(frames, cfg.clock) if action == 'export' and want_wav else None
                 if action == 'export':
                     write_outputs(output, blob, frames, report, csv=want_csv)
                     if wav is not None:
                         output.with_suffix('.wav').write_bytes(wav)
-                self.root.after(0, lambda: self.completed(action, report, pcm, output))
+                self.root.after(0, lambda: self.completed(action, report, pcm, output, token))
             except Exception as exc:
                 self.root.after(0, lambda message=str(exc): self.fail(message))
         Thread(target=work, daemon=True).start()
 
-    def completed(self, action, report, pcm, output):
+    def completed(self, action, report, pcm, output, token):
         self.busy = False
-        if pcm is not None:
+        if pcm is not None and token == self.play_generation:
             try:
                 self.player.play(pcm)
             except Exception as exc:
