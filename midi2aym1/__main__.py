@@ -5,8 +5,9 @@ import argparse
 from pathlib import Path
 import json
 
-from .core import Settings, convert, write_outputs
+from .core import PERCUSSION_MODES, Settings, convert, write_outputs
 from .audio import render_wav
+from .presets import BUILTIN_PRESET_IDS, make_builtin_preset
 
 
 def main(argv=None):
@@ -16,8 +17,10 @@ def main(argv=None):
     parser.add_argument('--clock', type=int, default=None, help='AY clock Hz (default 2000000)')
     parser.add_argument('--loop', action=argparse.BooleanOptionalAction, default=None, help='Loop from the beginning')
     parser.add_argument('--overflow', choices=['steal', 'drop'], default=None)
-    parser.add_argument('--percussion', choices=['noise', 'off'], default=None)
-    parser.add_argument('--preset', type=Path, help='JSON presets exported/edited by user')
+    parser.add_argument('--percussion', choices=PERCUSSION_MODES, default=None)
+    presets = parser.add_mutually_exclusive_group()
+    presets.add_argument('--preset', type=Path, help='JSON presets exported/edited by user')
+    presets.add_argument('--builtin-preset', choices=BUILTIN_PRESET_IDS, help='Built-in sound preset')
     parser.add_argument('--wav', action='store_true', help='Write AY-emulated WAV')
     parser.add_argument('--csv', action='store_true', help='Write register frames CSV')
     args = parser.parse_args(argv)
@@ -26,7 +29,10 @@ def main(argv=None):
         gui_main()
         return
     try:
-        cfg = Settings.from_dict(json.loads(args.preset.read_text(encoding='utf8'))) if args.preset else Settings()
+        if args.builtin_preset:
+            cfg = make_builtin_preset(args.builtin_preset)
+        else:
+            cfg = Settings.from_dict(json.loads(args.preset.read_text(encoding='utf8'))) if args.preset else Settings()
         for key in ('clock', 'loop', 'overflow', 'percussion'):
             if getattr(args, key) is not None:
                 setattr(cfg, key, getattr(args, key))

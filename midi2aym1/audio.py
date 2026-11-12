@@ -79,9 +79,15 @@ class Player:
             import pygame
         except ImportError as exc:
             raise RuntimeError('Audio playback requires pygame-ce (pip install -r requirements.txt)') from exc
-        if not pygame.mixer.get_init():
-            pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1, buffer=1024)
         self.stop()
+        mixer_format = pygame.mixer.get_init()
+        if mixer_format != (SAMPLE_RATE, -16, 1):
+            if mixer_format is not None:
+                pygame.mixer.quit()
+            # Sound(buffer=...) has no format metadata: it must match the mixer.
+            # Let SDL convert to the device format without changing our PCM layout.
+            pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1, buffer=1024,
+                              allowedchanges=0)
         self.sound = pygame.mixer.Sound(buffer=pcm)
         self.channel = self.sound.play()
 

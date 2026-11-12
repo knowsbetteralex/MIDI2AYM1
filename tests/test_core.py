@@ -6,7 +6,7 @@ from pathlib import Path
 import mido
 
 from midi2aym1.core import (Event, Settings, Song, convert, decode_aym1,
-                            encode_aym1, synthesize)
+                            encode_aym1, read_midi, synthesize)
 from midi2aym1.audio import render_wav
 
 
@@ -92,6 +92,73 @@ class ConverterTests(unittest.TestCase):
             self.assertGreaterEqual(len(frames), 75)
             self.assertTrue(render_wav(frames, self.cfg.clock).startswith(b'RIFF'))
             self.assertEqual(decode_aym1(data)[0], frames)
+
+    def test_quarter_note_timing_at_different_bpms_and_ppq(self):
+        cases = ((60, 96, [0, 50, 100, 150]), (90, 480, [0, 33, 67, 100]),
+                 (120, 480, [0, 25, 50, 75]), (240, 960, [0, 13, 25, 38]))
+        for bpm, ppq, expected_onsets in cases:
+            with self.subTest(bpm=bpm, ppq=ppq), tempfile.TemporaryDirectory() as tmp:
+                mf = mido.MidiFile(type=1, ticks_per_beat=ppq)
+                conductor, notes = mido.MidiTrack(), mido.MidiTrack()
+                mf.tracks.extend((conductor, notes))
+                # No tempo event means 120 BPM by the MIDI standard.
+                if bpm != 120:
+                    conductor.append(mido.MetaMessage('set_tempo', tempo=mido.bpm2tempo(bpm)))
+                for note in (60, 62, 64, 65):
+                    notes.append(mido.Message('note_on', note=note, velocity=100))
+                    notes.append(mido.Message('note_off', note=note, time=ppq))
+                path = Path(tmp) / 'quarters.mid'
+                mf.save(path)
+                song = read_midi(path)
+                self.assertEqual([e.frame for e in song.events if e.kind == 'on'], expected_onsets)
+                self.assertAlmostEqual(song.end_frame / 50, mf.length, delta=.01)
+
+    def test_short_notes_do_not_hang_when_on_and_off_share_a_frame(self):
+        # At 154 BPM / 96 PPQ, ticks 1501 and 1505 both round to AY frame 305.
+        # Also cover an explicitly zero-length note at the same MIDI tick.
+        for note_ticks in (0, 4):
+            with self.subTest(note_ticks=note_ticks), tempfile.TemporaryDirectory() as tmp:
+                midi = mido.MidiFile(type=0, ticks_per_beat=96)
+                track = mido.MidiTrack()
+                midi.tracks.append(track)
+                track.extend([mido.MetaMessage('set_tempo', tempo=389610),
+                              mido.Message('note_on', note=39, velocity=80, time=1501),
+                              mido.Message('note_off', note=39, time=note_ticks),
+                              mido.Message('note_on', note=39, velocity=80, time=96),
+                              mido.Message('note_off', note=39, time=24)])
+                path = Path(tmp) / 'short.mid'
+                midi.save(path)
+                song = read_midi(path)
+                self.assertEqual(song.events[0].frame, song.events[1].frame)
+                _, frames, report = convert(path, self.cfg)
+                self.assertEqual(report['warnings'], [])
+                self.assertTrue(all(not any(frame[8:11]) for frame in frames[306:320]))
+                self.assertEqual(report['peak_polyphony'], 1)
+
+    def test_track_counts_and_note_channels_are_distinct(self):
+        for midi_type, total_tracks, note_tracks in ((0, 1, 1), (1, 5, 3)):
+            with self.subTest(midi_type=midi_type), tempfile.TemporaryDirectory() as tmp:
+                midi = mido.MidiFile(type=midi_type, ticks_per_beat=96)
+                if midi_type == 1:
+                    midi.tracks.extend([mido.MidiTrack([mido.MetaMessage('time_signature')]),
+                                        mido.MidiTrack([mido.MetaMessage('set_tempo', tempo=389610)])])
+                    for channel, note in ((0, 60), (1, 64), (9, 36)):
+                        midi.tracks.append(mido.MidiTrack([
+                            mido.Message('note_on', channel=channel, note=note, velocity=100),
+                            mido.Message('note_off', channel=channel, note=note, time=96)]))
+                else:
+                    track = mido.MidiTrack()
+                    midi.tracks.append(track)
+                    for channel, note in ((0, 60), (1, 64), (9, 36)):
+                        track.append(mido.Message('note_on', channel=channel, note=note, velocity=100))
+                    for i, (channel, note) in enumerate(((0, 60), (1, 64), (9, 36))):
+                        track.append(mido.Message('note_off', channel=channel, note=note, time=96 if i == 0 else 0))
+                path = Path(tmp) / 'channels.mid'
+                midi.save(path)
+                _, _, report = convert(path, self.cfg)
+                self.assertEqual(report['tracks'], total_tracks)
+                self.assertEqual(report['note_tracks'], note_tracks)
+                self.assertEqual(report['midi_channels'], [1, 2, 10])
 
     def test_cli_preset_keeps_clock_and_loop(self):
         from midi2aym1.__main__ import main as cli_main

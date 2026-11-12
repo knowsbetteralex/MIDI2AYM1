@@ -13,6 +13,7 @@ import struct
 
 FPS = 50
 DEFAULT_CLOCK = 2_000_000
+PERCUSSION_MODES = ('noise', 'compact', 'pulse', 'off')
 
 GM_DRUM_NAMES = {
     35: 'Acoustic Bass Drum', 36: 'Bass Drum 1', 37: 'Side Stick', 38: 'Acoustic Snare',
@@ -82,7 +83,7 @@ class Settings:
     clock: int = DEFAULT_CLOCK
     loop: bool = False
     overflow: str = 'steal'  # or drop
-    percussion: str = 'noise'  # or off
+    percussion: str = 'noise'  # normal kit, compact kit, single-frame pulses, or off
     voices: list[Voice] = field(default_factory=lambda: [Voice() for _ in range(3)])
     drums: dict[int, Drum] = field(default_factory=default_drums)
     midi_priorities: list[int] = field(default_factory=lambda: [1] * 16)
@@ -92,8 +93,8 @@ class Settings:
             raise ValueError('AY clock outside 100000..20000000 Hz')
         if self.overflow not in ('steal', 'drop'):
             raise ValueError('overflow must be steal or drop')
-        if self.percussion not in ('noise', 'off'):
-            raise ValueError('percussion must be noise or off')
+        if self.percussion not in PERCUSSION_MODES:
+            raise ValueError('percussion must be noise, compact, pulse or off')
         if len(self.voices) != 3 or len(self.midi_priorities) != 16:
             raise ValueError('expected 3 AY voices and 16 MIDI priorities')
         for v in self.voices:
@@ -193,16 +194,9 @@ def read_midi(path: str | Path) -> Song:
         elif msg.type == 'pitchwheel':
             events.append(Event(frame, 'bend', ch, msg.pitch, 0, ti, ei))
 
-    # Release keys and pedal BEFORE new attacks at the same 20ms tick.
-    def rank(e):
-        if e.kind == 'cc' and e.a in (64, 120, 123) and e.b < 64:
-            return 0
-        if e.kind == 'off':
-            return 1
-        if e.kind == 'on':
-            return 3
-        return 2
-    events.sort(key=lambda e: (e.frame, rank(e), e.track, e.index))
+    # Keep the absolute-tick/in-track order established above. Several MIDI ticks
+    # can round to one AY frame: moving note_off before note_on would reverse a
+    # short note's lifetime and leave it held until another off or end-of-MIDI.
     return Song(events, end_frame, len(mf.tracks), tempo_changes, warnings)
 
 
@@ -255,6 +249,26 @@ def _note_period(note: Note, frame: int, bend: list[int], cfg: Settings, slot: i
     return _period(440 * 2 ** (semitones / 12), cfg.clock)
 
 
+def _drum_duration(pitch: int, drum: Drum, mode: str):
+    if mode == 'pulse':
+        return min(drum.duration_ms, 1000 / FPS)
+    if mode == 'compact':
+        cap = 20 if pitch in (42, 44) else 60 if drum.tone else 40
+        return min(drum.duration_ms, cap)
+    return drum.duration_ms
+
+
+def _drum_shape(pitch: int, drum: Drum, age_ms: float, mode: str):
+    """Tone-sweep position and volume factor, shared by scoring and output."""
+    duration = _drum_duration(pitch, drum, mode)
+    if mode == 'pulse':
+        return .5, 1.0  # one constant tone/noise impulse
+    if mode == 'compact':
+        return (0.0, 1.0) if age_ms < duration / 2 else (1.0, .5)
+    x = min(1.0, age_ms / duration)
+    return x, (1 - x) ** 1.3
+
+
 def synthesize(song: Song, cfg: Settings):
     """Return 14-register frames and an explicit loss/voice-usage report."""
     cfg.validate()
@@ -279,8 +293,10 @@ def synthesize(song: Song, cfg: Settings):
     cursor = 0
     ignored_drums = 0
     unmatched_off = 0
+    simple_drums = cfg.percussion in ('compact', 'pulse')
+    drum_epoch = -1
     max_release = max(v.release_ms for v in cfg.voices)
-    max_drum = max(d.duration_ms for d in cfg.drums.values())
+    max_drum = max(_drum_duration(pitch, d, cfg.percussion) for pitch, d in cfg.drums.items())
     tail = max(1, int(floor(max(max_release, max_drum) * FPS / 1000 + 0.5))) + 2
     total_cap = song.end_frame + tail
 
@@ -335,6 +351,8 @@ def synthesize(song: Song, cfg: Settings):
                     if e.a not in cfg.drums:
                         errors.append(f'Unmapped GM drum note {e.a} (track {e.track + 1})')
                         continue
+                    if simple_drums and cfg.drums[e.a].volume > 0:
+                        drum_epoch = frame
                 eid += 1
                 n = Note(eid, e.a, ch, e.b, e.track, frame, program=program[ch], drum=ch == 9)
                 notes.append(n)
@@ -356,7 +374,7 @@ def synthesize(song: Song, cfg: Settings):
                     n.released = frame
         # Discard sound only when all possible voice envelopes are exhausted.
         notes = [n for n in notes if n.drum and
-                 (frame - n.start) * 1000 / FPS < cfg.drums[n.pitch].duration_ms] + [
+                 (frame - n.start) * 1000 / FPS < _drum_duration(n.pitch, cfg.drums[n.pitch], cfg.percussion)] + [
                  n for n in notes if not n.drum and
                  (n.released is None or (frame - n.released) * 1000 / FPS < max_release)]
         by_id = {n.id: n for n in notes}
@@ -366,24 +384,33 @@ def synthesize(song: Song, cfg: Settings):
             if n.drum:
                 d = cfg.drums[n.pitch]
                 age = (frame - n.start) * 1000 / FPS
-                level = d.volume / 15 * (1 - age / d.duration_ms) ** 1.3 * n.velocity / 127
+                _, shape = _drum_shape(n.pitch, d, age, cfg.percussion)
+                level = d.volume / 15 * shape * n.velocity / 127
                 return cfg.midi_priorities[9] * 40 + d.priority * 20 + level * 30 + (15 if n.start == frame else 0)
             slot = prev.index(n.id) if n.id in prev else 0
             level = amp(n, frame, slot)
             return cfg.midi_priorities[n.channel] * 40 + level * 30 + (8 if n.id in prev else 0) + (15 if n.start == frame else 0) - (20 if n.released is not None else 0)
 
         candidates = [n for n in notes if
-                      (n.drum or max(amp(n, frame, slot) for slot in range(3)) > .006)]
+                      ((n.drum and (not simple_drums or cfg.drums[n.pitch].volume > 0)) or
+                       (not n.drum and max(amp(n, frame, slot) for slot in range(3)) > .006))]
         poly_sum += len(candidates)
         max_poly = max(max_poly, len(candidates))
         if len(candidates) > 3:
             over_frames += 1
+        selectable = candidates
+        if simple_drums:
+            # A new hit chokes older tails. Choose simultaneous hits by kit priority;
+            # keep rejected hits in candidates so the loss report remains explicit.
+            drums = [n for n in candidates if n.drum and n.start == drum_epoch]
+            chosen = max(drums, key=lambda n: (score(n), -n.id)) if drums else None
+            selectable = [n for n in candidates if not n.drum or n is chosen]
         if cfg.overflow == 'drop':
-            old = [by_id[x] for x in prev if x in by_id and by_id[x] in candidates]
-            remaining = sorted((n for n in candidates if n not in old), key=lambda n: (-score(n), n.id))
+            old = [by_id[x] for x in prev if x in by_id and by_id[x] in selectable]
+            remaining = sorted((n for n in selectable if n not in old), key=lambda n: (-score(n), n.id))
             wanted = (old + remaining)[:3]
         else:
-            wanted = sorted(candidates, key=lambda n: (-score(n), n.id))[:3]
+            wanted = sorted(selectable, key=lambda n: (-score(n), n.id))[:3]
         wanted_ids = {n.id for n in wanted}
         for n in candidates:
             if n.id not in wanted_ids:
@@ -400,20 +427,25 @@ def synthesize(song: Song, cfg: Settings):
                 next_slots[slot] = by_id[ident]
         for n in wanted:
             if n.id not in [x.id for x in next_slots if x]:
-                free = next(i for i in range(3) if next_slots[i] is None)
+                free_slots = [i for i in range(3) if next_slots[i] is None]
+                free = free_slots[-1] if simple_drums and n.drum else free_slots[0]
                 next_slots[free] = n
         assigned = [n.id if n else None for n in next_slots]
         regs = last_regs.copy()
-        mixer = 0x3f
+        # A muted channel need not toggle its tone/noise gates. Keeping them saves
+        # register writes between impulses without changing the audible output.
+        mixer = last_regs[7] if simple_drums else 0x3f
         noise_requests = []
         for slot, n in enumerate(next_slots):
             regs[8 + slot] = 0
             if n is None:
                 continue
+            mixer |= (1 << slot) | (1 << (3 + slot))
             if n.drum:
                 d = cfg.drums[n.pitch]
-                x = min(1.0, (frame - n.start) * 1000 / FPS / d.duration_ms)
-                vol = int(floor(d.volume * n.velocity / 127 * (1 - x) ** 1.3 + .5))
+                age = (frame - n.start) * 1000 / FPS
+                x, shape = _drum_shape(n.pitch, d, age, cfg.percussion)
+                vol = int(floor(d.volume * n.velocity / 127 * shape + .5))
                 regs[8 + slot] = max(0, min(15, vol))
                 if d.tone and d.start_hz > 0 and d.end_hz > 0:
                     hz = d.start_hz * (d.end_hz / d.start_hz) ** x
@@ -442,7 +474,10 @@ def synthesize(song: Song, cfg: Settings):
         errors.append(f'{ignored_drums} drum hit(s) disabled by percussion=off')
     report = {
         'fps': FPS, 'clock_hz': cfg.clock, 'frames': len(result), 'duration_seconds': round(len(result)/FPS, 3),
-        'tracks': song.source_tracks, 'tempo_changes': song.tempo_changes,
+        'tracks': song.source_tracks,
+        'note_tracks': len({e.track for e in song.events if e.kind == 'on'}),
+        'midi_channels': sorted({e.channel + 1 for e in song.events if e.kind == 'on'}),
+        'tempo_changes': song.tempo_changes, 'percussion': cfg.percussion,
         'peak_polyphony': max_poly, 'average_polyphony': round(poly_sum / max(1, len(result)), 3),
         'overflow_frames': over_frames, 'lost_note_instances': len(lost_ids),
         'lost_note_frames': lost_frames, 'losses': losses, 'warnings': errors,
