@@ -17,6 +17,43 @@
       "runOptions": { "instanceLimit": 1 }
     },
     {
+      "label": "MIDI2AYM1: Build EXE",
+      "detail": "Build a standalone Windows GUI executable at dist/MIDI2AYM1.exe.",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": [
+        "-m", "PyInstaller",
+        "--noconfirm",
+        "--onefile",
+        "--windowed",
+        "--noupx",
+        "--name", "MIDI2AYM1",
+        "--paths", "${workspaceFolder}",
+        "--hidden-import", "pygame.mixer",
+        "--specpath", "${workspaceFolder}/build",
+        "--workpath", "${workspaceFolder}/build/pyinstaller",
+        "--distpath", "${workspaceFolder}/dist",
+        "${workspaceFolder}/run_app.py"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "MIDI2AYM1: Install EXE build dependencies",
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "MIDI2AYM1: Install EXE build dependencies",
+      "detail": "Install the runtime and PyInstaller in the project virtual environment.",
+      "hide": true,
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["-m", "pip", "install", "-r", "requirements-build.txt"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
       "label": "MIDI2AYM1: Setup",
       "detail": "Create .venv and install requirements. Run once before the first launch.",
       "type": "process",

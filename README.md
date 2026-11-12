@@ -20,10 +20,21 @@ Open the project folder in VS Code, then use **Terminal → Run Task**:
 - **MIDI2AYM1: Setup** — first-time setup: create `.venv` with Python 3 and install dependencies. On Windows this uses the Python launcher (`py`); on Linux/macOS it uses `python3`.
 - **MIDI2AYM1: Run** — launch the desktop app with the project's `.venv`. This is also the default build task: **Ctrl+Shift+B** on Windows/Linux, **Cmd+Shift+B** on macOS.
 - **MIDI2AYM1: Test** — run the regression suite in the same environment.
+- **MIDI2AYM1: Build EXE** — build the standalone Windows desktop executable; see below.
 
 Python 3.10+ must already be installed. On Linux, install `python3-venv` and `python3-tk` if your distribution packages them separately. No Python extension or environment activation is required. Run Setup again when dependencies change; normal launches do not install packages.
 
 Task definitions: [`.vscode/tasks.json`](.vscode/tasks.json). See also the [VS Code task documentation](https://code.visualstudio.com/docs/debugtest/tasks).
+
+### Windows EXE
+
+On Windows, run **Terminal → Run Task → MIDI2AYM1: Build EXE**. Run **Setup** first if `.venv` has not been created. The build task automatically installs `requirements-build.txt`, then packages the application with PyInstaller.
+
+The result is **`dist/MIDI2AYM1.exe`**: one GUI executable with Python, Tkinter, pygame audio libraries and all built-in presets included. Copy that EXE to another Windows PC to run the converter without installing Python or copying the source/preset directories. The build targets the architecture of the Python used to build it (normally Windows x64).
+
+`build/` contains generated specifications and intermediate files; `dist/` contains the distributable. Both directories are ignored by Git. Close any running copy of `MIDI2AYM1.exe` before rebuilding it. The normal **Ctrl+Shift+B** shortcut still launches the Python app; select **Build EXE** from Run Task to package it.
+
+This is the desktop build without a console window. For terminal output in batch conversions, use `python -m midi2aym1` as described below. Packaging options are documented in the [PyInstaller manual](https://pyinstaller.org/en/stable/usage.html).
 
 ### Desktop studio
 
