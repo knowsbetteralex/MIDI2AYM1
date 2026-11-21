@@ -85,6 +85,14 @@ AY_MUSIC_GAME:
     INCBIN "assets/music/track.aym"
 ```
 
+## Planned AYM2 compression (specification only)
+
+**Not implemented yet:** [AYM2 compression TЗ — lossless command dictionaries, short register operations, optional procedural envelopes and reusable musical phrases](docs/aym2_compression_spec.md). The current GUI/CLI and export/preview still use **AYM1 v1**.
+
+The SpaceCan measurement behind this roadmap: the active `midiver.aym` (5,656 B) and `main_menu.aym` (2,944 B) total 8,600 B; 409 frames in the game track change only R10, and the exact four-byte command `80 00 04 00` occurs 362 times. A preliminary per-track dictionary model estimates ~4.65 KB for these two streams instead of 8.6 KB (**about 46% less**, excluding the new Z80 decoder and final format overhead). The aim is a byte-for-byte equivalent sequence of AY register **writes** at 50 Hz, including repeated R13 writes, without changing the sound.
+
+The first milestone keeps AYM1 export as the compatibility baseline; AYM2 export and decoding will be added together and benchmarked against the SpaceCan IM2 time/RAM budget. Procedural instruments and deduplicated song sections are later, separately validated optimizations.
+
 ## Format / conversion notes
 
 - Time map handles `set_tempo` changes; notes are quantized **once** to 50 Hz, not by rounding each MIDI delta.
