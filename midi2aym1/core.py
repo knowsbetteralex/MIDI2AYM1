@@ -1,4 +1,4 @@
-"""MIDI timing, three-voice allocation, AY registers, and strict AYM1 codec.
+"""MIDI timing, three-voice allocation, AY registers, and strict AYM1/AYM2 codecs.
 
 All MIDI interpretation happens here, never on the Z80 target.
 """
@@ -9,9 +9,10 @@ from dataclasses import asdict, dataclass, field
 from math import floor, log2, pi, sin
 from pathlib import Path
 import json
-import struct
+from .codec import (COMPRESSION_MODES, FORMATS, FPS, MAX_DICTIONARY, decode_aym,
+                    decode_aym1, decode_aym2, decode_trace, encode_aym1, encode_aym2,
+                    encode_stream, stream_from_frames)
 
-FPS = 50
 DEFAULT_CLOCK = 2_000_000
 PERCUSSION_MODES = ('noise', 'compact', 'pulse', 'off')
 
@@ -88,7 +89,15 @@ class Settings:
     drums: dict[int, Drum] = field(default_factory=default_drums)
     midi_priorities: list[int] = field(default_factory=lambda: [1] * 16)
 
+    format: str = 'aym1'
+    compression: str = 'dictionary'
+    max_dictionary: int = MAX_DICTIONARY
+
     def validate(self):
+        if self.format not in FORMATS or self.compression not in COMPRESSION_MODES:
+            raise ValueError('invalid format or compression mode')
+        if type(self.max_dictionary) is not int or not 0 <= self.max_dictionary <= MAX_DICTIONARY:
+            raise ValueError('max_dictionary must be an integer in 0..96')
         if self.clock < 100_000 or self.clock > 20_000_000:
             raise ValueError('AY clock outside 100000..20000000 Hz')
         if self.overflow not in ('steal', 'drop'):
@@ -112,7 +121,8 @@ class Settings:
     @classmethod
     def from_dict(cls, data):
         s = cls()
-        for key in ('clock', 'loop', 'overflow', 'percussion', 'midi_priorities'):
+        for key in ('clock', 'loop', 'overflow', 'percussion', 'midi_priorities',
+                    'format', 'compression', 'max_dictionary'):
             if key in data:
                 setattr(s, key, data[key])
         if 'voices' in data:
@@ -485,115 +495,39 @@ def synthesize(song: Song, cfg: Settings):
     return result, report
 
 
-def encode_aym1(frames: list[list[int]], clock: int, loop: bool = False) -> bytes:
-    """AYM1 v1: FRAME consumes one slot, WAIT N consumes N slots."""
-    if not frames:
-        frames = [[0, 0, 0, 0, 0, 0, 0, 0x3f, 0, 0, 0, 0, 0, 0]]
-    payload = bytearray()
-    previous = [0] * 14
-    previous[7] = 0x3f
-    wait = 0
-    for i, regs in enumerate(frames):
-        if len(regs) != 14:
-            raise ValueError('expected exactly 14 AY registers')
-        if any(v < 0 or v > 255 for v in regs):
-            raise ValueError('invalid register byte')
-        if regs[7] & 0xc0 or any(regs[i] & 0xf0 for i in (1, 3, 5)) or regs[6] & ~31 or any(regs[i] & ~15 for i in (8, 9, 10)):
-            raise ValueError('register out of AY range')
-        mask = sum(1 << r for r in range(14) if regs[r] != previous[r])
-        if i == 0:
-            mask |= 0x7ff  # R0..R10, includes R6 as well (safe initialization)
-        if mask == 0:
-            wait += 1
-        else:
-            while wait:
-                n = min(wait, 127)
-                payload.append(n)
-                wait -= n
-            payload += bytes((0x80, mask & 255, mask >> 8))
-            payload += bytes(regs[r] for r in range(14) if mask & (1 << r))
-        previous = regs
-    while wait:
-        n = min(wait, 127)
-        payload.append(n)
-        wait -= n
-    payload.append(0x00)
-    length = 16 + len(payload)
-    if length > 65535:
-        raise ValueError(f'AYM1 is {length} bytes (> 65535); shorten or split composition')
-    data = struct.pack('<4sBBHHHI', b'AYM1', FPS, int(loop), length, 16 if loop else 0, 0, clock) + payload
-    decode_aym1(data)  # reject malformed binary before returning
-    return data
-
-
-def decode_aym1(data: bytes):
-    """Independent strict validation and expanded per-frame register states."""
-    if len(data) < 17:
-        raise ValueError('AYM1 too small')
-    magic, fps, flags, length, loop_offset, reserved, clock = struct.unpack_from('<4sBBHHHI', data)
-    if magic != b'AYM1' or fps != FPS or flags & ~1 or reserved or length != len(data):
-        raise ValueError('AYM1 header invalid')
-    if (flags & 1 and not 16 <= loop_offset < len(data)-1) or (not flags & 1 and loop_offset):
-        raise ValueError('AYM1 loop offset invalid')
-    i = 16
-    regs = [0] * 14
-    regs[7] = 0x3f
-    frames = []
-    boundaries = set()
-    first = True
-    while i < length:
-        boundaries.add(i)
-        opcode = data[i]
-        i += 1
-        if opcode == 0:
-            if i != length:
-                raise ValueError('trailing bytes after END')
-            if flags & 1 and loop_offset not in boundaries:
-                raise ValueError('loop offset not on command boundary')
-            if not frames:
-                raise ValueError('empty stream')
-            return frames, {'clock_hz': clock, 'loop': bool(flags & 1), 'frames': len(frames)}
-        if opcode == 0x80:
-            if i + 2 > length:
-                raise ValueError('truncated FRAME mask')
-            mask = data[i] | (data[i+1] << 8)
-            i += 2
-            if mask & 0xc000:
-                raise ValueError('invalid register mask')
-            if first and mask & 0x7bf != 0x7bf:
-                raise ValueError('first FRAME fails to initialize voices')
-            count = mask.bit_count()
-            if i + count > length:
-                raise ValueError('truncated FRAME values')
-            for r in range(14):
-                if mask & (1 << r):
-                    regs[r] = data[i]
-                    i += 1
-            if regs[7] & 0xc0 or regs[6] & ~31 or any(regs[j] & ~15 for j in (1, 3, 5)) or any(regs[j] & ~31 for j in (8, 9, 10)):
-                raise ValueError('register value out of bounds')
-            frames.append(regs.copy())
-            first = False
-        elif 1 <= opcode <= 0x7f:
-            if first:
-                raise ValueError('first command must be FRAME')
-            frames.extend([regs.copy() for _ in range(opcode)])
-        else:
-            raise ValueError('reserved opcode')
-        if len(frames) > 1_000_000:
-            raise ValueError('unreasonable AYM1 duration')
-    raise ValueError('missing END')
-
-
 def convert(path: str | Path, cfg: Settings):
-    song = read_midi(path)
-    frames, report = synthesize(song, cfg)
-    blob = encode_aym1(frames, cfg.clock, cfg.loop)
-    check, _ = decode_aym1(blob)
-    if frames != check:
+    cfg.validate()
+    path = Path(path)
+    with path.open('rb') as source:
+        magic = source.read(4)
+    if magic in (b'AYM1', b'AYM2'):
+        trace = decode_trace(path.read_bytes())
+        count = sum(1 if c[0] == 0x80 else c[0] for c in trace.commands)
+        report = {
+            'fps': FPS, 'clock_hz': trace.clock, 'frames': count,
+            'duration_seconds': round(count / FPS, 3), 'source_format': magic.decode().lower(),
+            'tracks': 0, 'note_tracks': 0, 'midi_channels': [], 'tempo_changes': 0,
+            'percussion': cfg.percussion, 'peak_polyphony': 0, 'average_polyphony': 0,
+            'overflow_frames': 0, 'lost_note_instances': 0, 'lost_note_frames': 0,
+            'losses': [], 'warnings': [],
+        }
+    else:
+        song = read_midi(path)
+        frames, report = synthesize(song, cfg)
+        trace = stream_from_frames(frames, cfg.clock, cfg.loop)
+    blob, compression = encode_stream(trace, format=cfg.format, compression=cfg.compression,
+                                      max_dictionary=cfg.max_dictionary)
+    # All preview/export audio and CSV use the independently decoded result.
+    decoded, _ = decode_aym(blob)
+    if magic not in (b'AYM1', b'AYM2') and frames != decoded:
         raise AssertionError('codec frame roundtrip mismatch')
+    report['format'] = compression['format']
+    report['compression'] = compression
     report['bytes'] = len(blob)
-    report['compression_bytes_per_frame'] = round(len(blob) / max(len(frames), 1), 3)
-    return blob, frames, report
+    report['compression_bytes_per_frame'] = round(len(blob) / max(len(decoded), 1), 3)
+    if compression['saved_bytes'] < 0:
+        report['warnings'].append('AYM2 is larger than AYM1; format=auto selects the smaller file.')
+    return blob, decoded, report
 
 
 def write_outputs(path: Path, blob: bytes, frames, report, csv=False):
@@ -606,3 +540,8 @@ def write_outputs(path: Path, blob: bytes, frames, report, csv=False):
             writer = csvmod.writer(fh)
             writer.writerow(['frame'] + [f'R{i}' for i in range(14)])
             writer.writerows([[i] + row for i, row in enumerate(frames)])
+        with path.with_suffix('.writes.csv').open('w', newline='', encoding='utf8') as fh:
+            writer = csvmod.writer(fh)
+            writer.writerow(['frame', 'register', 'value'])
+            for frame, writes in enumerate(decode_trace(blob).slots()):
+                writer.writerows((frame, register, value) for register, value in writes)

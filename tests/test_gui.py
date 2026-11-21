@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import mido
 
-from midi2aym1.core import Settings, convert, decode_aym1
+from midi2aym1.core import Settings, convert, decode_aym1, decode_aym2
 from midi2aym1.gui import InputError, Window
 from midi2aym1.presets import BUILTIN_PRESET_IDS, make_builtin_preset
 
@@ -187,6 +187,37 @@ class GuiTests(unittest.TestCase):
         self.app.player.play.assert_not_called()
         self.assertIsNotNone(self.app.last_report)
         self.assertFalse(self.app.playing)
+
+    def test_aym2_export_preview_and_preset_keep_format_options(self):
+        self.app.set_source(self.source)
+        self.app.format_combo.current(1)
+        self.app.format_combo.event_generate('<<ComboboxSelected>>')
+        self.app.compression_combo.current(2)
+        self.app.compression_combo.event_generate('<<ComboboxSelected>>')
+        self.app.max_dictionary_var.set('24')
+        self.assertFalse(self.app.preset_modified)
+        self.choose_builtin('compact-drums')
+        self.assertEqual(self.app.format_var.get(), 'aym2')
+        self.assertEqual(self.app.max_dictionary_var.get(), '24')
+        self.app.lang_var.set('EN')
+        self.app.change_language()
+        self.assertEqual(self.app.format_combo.current(), 1)
+        self.assertEqual(self.app.compression_combo.current(), 2)
+        dest = self.folder / 'compressed.aym'
+        with patch('midi2aym1.gui.filedialog.asksaveasfilename', return_value=str(dest)):
+            self.app.run('export')
+        self.wait_for_job()
+        frames, _ = decode_aym2(dest.read_bytes())
+        self.assertEqual(self.app.last_report['format'], 'aym2')
+        self.app.show_report()
+        with patch('midi2aym1.gui.render_pcm', return_value=b'pcm') as render:
+            self.app.run('play')
+            self.wait_for_job()
+        self.assertEqual(render.call_args.args[0], frames)
+        self.app.player.play.assert_called_with(b'pcm')
+        self.app.max_dictionary_var.set('97')
+        with self.assertRaises(InputError):
+            self.app.read_settings()
 
     def test_worker_error_recovers_controls(self):
         self.app.set_source(self.folder / 'missing.mid')

@@ -1,6 +1,6 @@
 # MIDI2AYM1 — SpaceCan AY music converter
 
-Desktop **MIDI → AYM1 v1** converter for the ZX Spectrum 48K **SpaceCan** AY player. It runs on a PC, not on the Spectrum. The 3-channel preview synthesizes audio from the actual 50 Hz AY register stream, **not MIDI instruments or a SoundFont**. It approximates AY square/noise generators and nonlinear output levels; real hardware may sound different.
+Desktop **MIDI → AYM1 / AYM2** converter for the ZX Spectrum 48K **SpaceCan** AY player. It runs on a PC, not on the Spectrum. The 3-channel preview synthesizes audio from the decoded 50 Hz AY register stream, **not MIDI instruments or a SoundFont**. It approximates AY square/noise generators and nonlinear output levels; real hardware may sound different. AYM1 remains the compatible default; in-game AYM2 playback requires an updated Z80 player.
 
 Source specification: [SpaceCan AYM1 format](https://github.com/knowsbetteralex/SpaceCan/blob/main/docs/aym1_format.md) and [MIDI conversion spec](https://github.com/knowsbetteralex/SpaceCan/blob/main/docs/midi_to_aym1_spec.md).
 
@@ -54,11 +54,11 @@ Choose a built-in preset from **Sound preset** at the top of the left sidebar. P
 | Pulses + flat tones | `pulse-drums` | Single-frame drum pulses and the same flat tonal voices. |
 | Flat tones only | `tones-only` | Drums off and flat tonal voices. |
 
-Built-in selection preserves the current AY clock and loop option. Sound edits mark the preset as modified; selecting it again restores its settings. **Load preset / Save preset** still import/export user JSON settings, including clock and loop. The JSON files in [`presets/`](presets/) are optional examples.
+Built-in selection preserves the current AY clock, loop and export/compression options. Sound edits mark the preset as modified; selecting it again restores its settings. **Load preset / Save preset** import/export user JSON settings, including clock, loop, format, compression and dictionary limit. Old JSON presets continue to work. The JSON files in [`presets/`](presets/) are optional examples.
 
 GUI features:
 
-- Open MIDI type 0/1, convert to AYM1, ▶ listen / ■ stop, export `.aym`, `.report.json`, optional `.wav` and `.frames.csv`.
+- Open MIDI type 0/1, choose AYM1 / AYM2 / Auto under **Export format**, ▶ listen / ■ stop, export `.aym`, `.report.json`, optional `.wav`, `.frames.csv` and `.writes.csv`.
 - AY target clock presets **2,000,000 Hz** (Delta-C) / **1,773,400 Hz** (ZX 128K); loop and overflow policy.
 - **Three independent voice settings** (gain, attack/decay/sustain/release, vibrato) and source MIDI channel priorities.
 - **MIDI channel 10 General MIDI drum map**: GM notes **35–81** keep their note identities (kick on 35/36, snare 38/40, hats 42/44/46, etc.). Customize each sound's noise period, tone sweep, duration, level, and priority. Select a drum and press ▶ Drum.
@@ -76,22 +76,69 @@ python -m midi2aym1 input.mid -o track.aym --clock 2000000 --loop --overflow ste
 python -m midi2aym1 input.mid --preset my_kit.json --wav
 python -m midi2aym1 input.mid --builtin-preset compact-drums --wav
 python -m midi2aym1 input.mid --builtin-preset pulse-drums --clock 1773400 --loop
+python -m midi2aym1 input.mid -o compressed.aym --format aym2 --compression dictionary --max-dictionary 96 --wav --csv
+python -m midi2aym1 original.aym -o compressed.aym --format auto --csv
 ```
 
-Configuration: `--clock`, `--loop`/`--no-loop`, `--overflow {steal,drop}`, `--percussion {noise,compact,pulse,off}`, `--preset file.json` or `--builtin-preset ID`, `--wav`, `--csv`. `noise` is the original Full kit. CLI options override matching preset settings; choose one preset source. A full AYM1 blob is emitted, ready for:
+Configuration: `--clock`, `--loop`/`--no-loop`, `--overflow {steal,drop}`, `--percussion {noise,compact,pulse,off}`, `--preset file.json` or `--builtin-preset ID`, `--format {aym1,aym2,auto}`, `--compression {none,short,dictionary}`, `--max-dictionary 0..96`, `--wav`, `--csv`. Defaults are AYM1, dictionary compression for AYM2, and at most 96 dictionary entries. `noise` is the original Full kit. CLI options override matching preset settings; choose one preset source. A full container is emitted, including its header. The default AYM1 output is ready for the existing player:
 
 ```asm
 AY_MUSIC_GAME:
     INCBIN "assets/music/track.aym"
 ```
 
-## Planned AYM2 compression (specification only)
+## AYM2 lossless compression
 
-**Not implemented yet:** [AYM2 compression TЗ — lossless command dictionaries, short register operations, optional procedural envelopes and reusable musical phrases](docs/aym2_compression_spec.md). The current GUI/CLI and export/preview still use **AYM1 v1**.
+Implemented the mandatory PC codec stage of the [compression specification](docs/aym2_compression_spec.md).
+The [normative AYM2 v1 specification](docs/aym2_format.md) fixes the 24-byte header,
+opcode map, dictionary pointers and validation rules. The old AYM1 bytes and
+50 Hz timeline are preserved. AYM2 uses short register/volume/mute/tone commands
+and up to 96 per-track dictionary entries containing exact FRAME commands.
+Dictionary selection accounts for short encodings, stored templates and pointers;
+only entries with a positive net saving are used. Output is deterministic.
 
-The SpaceCan measurement behind this roadmap: the active `midiver.aym` (5,656 B) and `main_menu.aym` (2,944 B) total 8,600 B; 409 frames in the game track change only R10, and the exact four-byte command `80 00 04 00` occurs 362 times. A preliminary per-track dictionary model estimates ~4.65 KB for these two streams instead of 8.6 KB (**about 46% less**, excluding the new Z80 decoder and final format overhead). The aim is a byte-for-byte equivalent sequence of AY register **writes** at 50 Hz, including repeated R13 writes, without changing the sound.
+`none` keeps full FRAMEs inside an AYM2 container; `short` uses fixed primitives;
+`dictionary` combines short commands and profitable FRAME tokens. **Auto** chooses
+the smallest complete supported container, with AYM1 winning ties. It also falls
+back to AYM1 if an AYM2 candidate exceeds 65535 bytes. An explicit AYM2 request
+keeps AYM2 even when larger and adds a report warning. Both formats must fit the
+16-bit block limit; the total RAM budget of a game still needs separate validation.
 
-The first milestone keeps AYM1 export as the compatibility baseline; AYM2 export and decoding will be added together and benchmarked against the SpaceCan IM2 time/RAM budget. Procedural instruments and deduplicated song sections are later, separately validated optimizations.
+CLI can also **repack existing AYM1/AYM2 files** without MIDI synthesis. This
+preserves all original register writes, including identical repeated R13 writes,
+WAIT command boundaries and arbitrary legal loop positions. For repacking, sound
+options/presets are rejected: clock and loop come from the source. The default
+repack destination is `name.repacked.aym`; explicitly overwriting the source is
+rejected. Both binary versions use `.aym`; the signature identifies the version.
+
+Reports compare AYM1 and candidate AYM2 sizes, show actual stream/header/dictionary
+costs, command counts, saving, selection reason and codec version. Preview, WAV
+and `.frames.csv` use decoded output states. `.writes.csv` lists the ordered
+register write events with their frame numbers, so repeated R13 events remain
+visible. The audio emulator still approximates AY and does not emulate hardware
+envelopes; exact hardware-envelope validation uses the write trace.
+
+Measured on the [pinned SpaceCan regression inputs](tests/fixtures/spacecan/README.md):
+
+| Input | AYM1 | AYM2 short | AYM2 short + dictionary |
+| --- | ---: | ---: | ---: |
+| midiver | 5,656 B | 4,043 B | **2,608 B** |
+| main_menu | 2,944 B | 2,384 B | **1,867 B** |
+| victory | 115 B | 123 B | 114 B |
+| game_over | 56 B | 56 B | 56 B |
+| gol (test only) | 15,151 B | 13,953 B | 7,644 B |
+
+The two main tracks total **4,475 B instead of 8,600 B (47.97% less)**, including
+all AYM2 container and dictionary overhead. This is asset size, before the cost
+of a Z80 decoder. Tests verify exact commands, timed writes, loop and decoded
+states for all five files and all compression modes, plus representative audio.
+The full WAV of each file was also compared by SHA-256 after AYM1/AYM2 decoding;
+all five pairs matched byte for byte.
+
+The SpaceCan Z80 player, IM2 T-state/RAM measurements and hardware/emulator
+acceptance remain the next integration stage. No SpaceCan assets or assembly
+were changed. AYM1 stays the default until that stage passes. Procedural
+instruments and phrase reuse are later experiments, outside AYM2 v1.
 
 ## Format / conversion notes
 
@@ -100,6 +147,7 @@ The first milestone keeps AYM1 export as the compatibility baseline; AYM2 export
 - Matching repeated notes use FIFO by MIDI channel/pitch. Overlapping notes, CC64 sustain, CC7 volume, CC11 expression, CC120/123, program changes and pitch bend (±2 semitones) are parsed. Software ADSR avoids hardware envelope sharing problems.
 - GM drums have tone/noise presets rather than an impossible independent fourth AY voice; kick is a short falling tone, hats are sharp noise, snares use tone plus noise.
 - `AYM1`: 16-byte LE header; FRAME `0x80 + mask16 + changed R0..R13 bytes`, WAIT 1..127, END 0. R7 GPIO bits cleared; hardware R13 unused by default. Full size ≤65535 bytes. Loop offset points to first payload command.
+- `AYM2`: [24-byte LE header](docs/aym2_format.md), explicit stream/dictionary bounds, short commands and `A0..FF` tokens. Every FRAME/short/TOKEN consumes exactly one slot; WAIT consumes N slots; END adds no slot at loop. Dictionary entries contain only full FRAMEs, with no recursion.
 - Actual output WAV uses the *decoded* output frames and a software AY square/noise emulation. It is indicative, not bit-accurate AY/YM hardware emulation. Timing resolution remains 20 ms.
 - Preview playback keeps the rendered PCM format fixed at **22,050 Hz, signed 16-bit mono**. SDL converts for the audio device internally; automatic changes to the mixer's rate/channel count would otherwise change the speed of a raw PCM buffer.
 
@@ -116,5 +164,11 @@ GUI regression tests also cover language changes with unfinished edits, preset r
 Separate playback tests use a real pygame mixer with SDL's silent `dummy` driver to check that PCM, WAV and preview durations agree, including when the mixer was previously initialized with a different sample rate or channel count. MIDI timing tests cover 60/90/120/240 BPM and different PPQ resolutions.
 
 Compact percussion tests cover one-frame pulses, two-step tones, simultaneous-hit priorities, choking without tail resumption, muted hits, user durations, stable melodic voices, codec roundtrips and GUI/CLI/preset mode selection.
+
+AYM2 tests include a literal binary reference vector, every short opcode, repeated
+R13 retriggers, hardware-envelope bits, dictionary profitability and limits,
+arbitrary loop boundaries, first-frame tokens, WAIT 1/127, malformed/truncated
+containers, randomized register traces, over-limit AYM1 compressed into AYM2,
+all five SpaceCan samples and GUI/CLI/preset/preview integration.
 
 Built-in preset tests check independence from external JSON files, isolated settings snapshots, flat tonal output, CLI overrides, GUI target preservation, modified markers, localization and continued JSON import/export.

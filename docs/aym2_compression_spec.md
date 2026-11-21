@@ -1,8 +1,13 @@
 # ТЗ: AYM2 — сжатие музыки для SpaceCan / MIDI2AYM1
 
-**Статус:** проектное предложение, **не реализовано** на 2026-11-21.  
+**Статус на 2026-11-21:** обязательный ПК-этап реализован: нормативный
+[формат AYM2 v1](aym2_format.md), двойной кодек, короткие команды, словарь,
+CLI/GUI и regression fixtures. Исходное проектное предложение ниже сохранено
+как требования и план; отметки «ещё не реализованы» относятся к моменту его
+написания. Интеграция Z80/IM2, аппаратные проверки и экспериментальные этапы
+2–3 остаются отдельной работой.
 **Приоритет:** сначала *побитовo точное на уровне регистров* сжатие, затем необязательные алгоритмические инструменты и фрагменты.  
-**Код конвертера:** `midi2aym1/core.py` (`encode_aym1`, `decode_aym1`).  
+**Код конвертера:** `midi2aym1/codec.py` (кодеки и трассы), `midi2aym1/core.py` (MIDI/интеграция).
 **Плеер:** [SpaceCan/ay_player.asm](https://github.com/knowsbetteralex/SpaceCan/blob/main/ay_player.asm), [формат AYM1](https://github.com/knowsbetteralex/SpaceCan/blob/main/docs/aym1_format.md), [анализ игры](https://github.com/knowsbetteralex/SpaceCan/blob/main/docs/aym_compression_analysis.md).
 
 ## 1. Цель и ограничения

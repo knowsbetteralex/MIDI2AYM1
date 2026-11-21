@@ -1,6 +1,7 @@
 """Software AY-3-8910 register preview. Approximate output DAC/noise, not SoundFont.
 
-Preview reads the decoded AYM1 stream, i.e. the exact register states on Z80.
+Preview reads decoded AYM1/AYM2 register states. Hardware envelopes are not
+emulated; their write events are preserved by the codecs and CSV trace.
 """
 from __future__ import annotations
 

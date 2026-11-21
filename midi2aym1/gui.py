@@ -1,4 +1,4 @@
-"""Bilingual studio workbench for MIDI -> AY AYM1."""
+"""Bilingual studio workbench for MIDI -> AY AYM1/AYM2."""
 from __future__ import annotations
 
 from math import isfinite
@@ -13,6 +13,7 @@ from .audio import Player, render_pcm, render_wav
 from .core import (Drum, Event, GM_DRUM_NAMES, PERCUSSION_MODES, Settings, Song, Voice,
                    convert, synthesize, write_outputs)
 from .presets import BUILTIN_PRESETS, make_builtin_preset
+from .codec import COMPRESSION_MODES, FORMATS, MAX_DICTIONARY
 from .ui_style import (AMBER, BG, FIELD, FG, MUTED, TEAL, VOICE_COLOURS,
                        ScrollFrame, configure_theme)
 from .ui_text import TEXT
@@ -65,6 +66,9 @@ class Window:
         self.loop_var = tk.BooleanVar(root, False)
         self.overflow_var = tk.StringVar(root, 'steal')
         self.perc_var = tk.StringVar(root, 'noise')
+        self.format_var = tk.StringVar(root, self.cfg.format)
+        self.compression_var = tk.StringVar(root, self.cfg.compression)
+        self.max_dictionary_var = tk.StringVar(root, str(self.cfg.max_dictionary))
         self.lang_var = tk.StringVar(root, 'RU')
         self.search_var = tk.StringVar(root)
         self.builtin_display = tk.StringVar(root)
@@ -78,6 +82,7 @@ class Window:
                            ('target', 'voice0', 'voice1', 'voice2', 'drum', 'priorities')}
         self._load_drum(35)
         for var in [self.clock_var, self.loop_var, self.overflow_var, self.perc_var,
+                    self.format_var, self.compression_var, self.max_dictionary_var,
                     *self.priority_vars, *self.drum_vars.values(), self.drum_tone, self.drum_noise]:
             var.trace_add('write', self._settings_changed)
         for i, row in enumerate(self.voice_vars):
@@ -231,7 +236,7 @@ class Window:
         ttk.Separator(source).pack(fill='x', pady=14)
         self.source_state = ttk.Label(source, style='Success.TLabel', wraplength=210)
         self.source_state.pack(anchor='w')
-        ttk.Label(source, text='MIDI → 3 × AY → AYM1', style='CardMuted.TLabel').pack(anchor='w', pady=(6, 0))
+        ttk.Label(source, text='MIDI → 3 × AY → AYM1 / AYM2', style='CardMuted.TLabel').pack(anchor='w', pady=(6, 0))
         target = self._card(sidebar.content)
         target.pack(fill='x', pady=(0, 16))
         self._label(target, 'target', 'Section.TLabel').pack(anchor='w', pady=(0, 16))
@@ -260,7 +265,25 @@ class Window:
         formats = self._card(sidebar.content)
         formats.pack(fill='x')
         self._label(formats, 'format', 'Section.TLabel').pack(anchor='w')
-        ttk.Label(formats, text='AYM1 v1  ·  ZX 48K', style='CardTitle.TLabel').pack(anchor='w', pady=(12, 8))
+        self.format_display = tk.StringVar(self.root, self.tr('format_' + self.format_var.get()))
+        self.format_combo = ttk.Combobox(formats, textvariable=self.format_display, state='readonly',
+                                        values=[self.tr('format_' + x) for x in FORMATS], width=1)
+        self.format_combo.pack(fill='x', pady=(12, 8))
+        self.format_combo.bind('<<ComboboxSelected>>', lambda _: self.format_var.set(FORMATS[self.format_combo.current()]))
+        self.mutable_controls.append(self.format_combo)
+        self.format_hint = ttk.Label(formats, text=self.tr('format_' + self.format_var.get() + '_hint'),
+                                     style='CardMuted.TLabel', wraplength=210)
+        self.format_hint.pack(anchor='w', pady=(0, 12))
+        self._label(formats, 'compression_mode', 'CardMuted.TLabel').pack(anchor='w')
+        self.compression_display = tk.StringVar(self.root, self.tr('compress_' + self.compression_var.get()))
+        self.compression_combo = ttk.Combobox(formats, textvariable=self.compression_display, state='readonly',
+                                             values=[self.tr('compress_' + x) for x in COMPRESSION_MODES], width=1)
+        self.compression_combo.pack(fill='x', pady=(6, 10))
+        self.compression_combo.bind('<<ComboboxSelected>>', lambda _: self.compression_var.set(
+            COMPRESSION_MODES[self.compression_combo.current()]))
+        self.mutable_controls.append(self.compression_combo)
+        self._label(formats, 'max_dictionary', 'CardMuted.TLabel').pack(anchor='w')
+        self._entry(formats, self.max_dictionary_var, 'target:max_dictionary').pack(fill='x', pady=(6, 12))
         self._label(formats, 'report_always', 'CardMuted.TLabel', wraplength=210).pack(anchor='w')
 
     def _build_voices(self):
@@ -515,7 +538,8 @@ class Window:
     def _settings_changed(self, *trace, preset_changed=True):
         if self._guard:
             return
-        if preset_changed and (not trace or trace[0] not in (str(self.clock_var), str(self.loop_var))):
+        if preset_changed and (not trace or trace[0] not in (str(self.clock_var), str(self.loop_var),
+                str(self.format_var), str(self.compression_var), str(self.max_dictionary_var))):
             self.preset_modified = True
         self.revision += 1
         self.play_generation += 1
@@ -527,6 +551,9 @@ class Window:
             self._update_buttons()
             self.overflow_hint.configure(text=self.tr(self.overflow_var.get() + '_hint'))
             self.perc_hint.configure(text=self.tr(self.perc_var.get() + '_hint'))
+            self.format_display.set(self.tr('format_' + self.format_var.get()))
+            self.compression_display.set(self.tr('compress_' + self.compression_var.get()))
+            self.format_hint.configure(text=self.tr('format_' + self.format_var.get() + '_hint'))
             self._sync_preset_ui()
             if not self.busy and (self.last_report is not None or was_playing):
                 self.set_status('stale' if self.last_report is not None else 'stopped')
@@ -611,6 +638,10 @@ class Window:
         cfg.loop = self.loop_var.get()
         cfg.overflow = self.overflow_var.get()
         cfg.percussion = self.perc_var.get()
+        cfg.format = self.format_var.get()
+        cfg.compression = self.compression_var.get()
+        cfg.max_dictionary = self._number(self.max_dictionary_var, 'target:max_dictionary',
+                                          'max_dictionary', integer=True, low=0, high=MAX_DICTIONARY)
         cfg.midi_priorities = [self._number(var, f'priorities:{i}', 'priority', integer=True)
                                for i, var in enumerate(self.priority_vars)]
         cfg.drums[self.selected_drum] = self._drum_from_editor()
@@ -828,7 +859,7 @@ class Window:
         output = None
         if action == 'export':
             filename = filedialog.asksaveasfilename(parent=self.root, defaultextension='.aym',
-                        initialfile=self.path.stem + '.aym', filetypes=[('AYM1', '*.aym')])
+                        initialfile=self.path.stem + '.aym', filetypes=[('AYM1 / AYM2', '*.aym')])
             if not filename:
                 return
             output = Path(filename)
@@ -949,6 +980,10 @@ class Window:
         preset = BUILTIN_PRESETS[index]
         try:
             cfg = make_builtin_preset(preset.key, clock=self._read_clock(), loop=self.loop_var.get())
+            cfg.format = self.format_var.get()
+            cfg.compression = self.compression_var.get()
+            cfg.max_dictionary = self._number(self.max_dictionary_var, 'target:max_dictionary',
+                                              'max_dictionary', integer=True, low=0, high=MAX_DICTIONARY)
         except ValueError as exc:
             self._show_validation(exc)
             self._sync_preset_ui()
@@ -988,6 +1023,9 @@ class Window:
             self.loop_var.set(cfg.loop)
             self.overflow_var.set(cfg.overflow)
             self.perc_var.set(cfg.percussion)
+            self.format_var.set(cfg.format)
+            self.compression_var.set(cfg.compression)
+            self.max_dictionary_var.set(str(cfg.max_dictionary))
             for row, voice in zip(self.voice_vars, cfg.voices):
                 for field, var in zip(VOICE_FIELDS, row):
                     var.set(str(getattr(voice, field)))
@@ -1056,6 +1094,15 @@ class Window:
         values.append(('midi_channels', ', '.join(str(ch) for ch in report['midi_channels'])))
         values.append(('percussion', self.tr(report['percussion'])))
         values.append(('compression', report['compression_bytes_per_frame']))
+        if 'compression' in report:
+            c = report['compression']
+            values.extend([('output_format', c['format'].upper()),
+                           ('baseline_size', f"{c['aym1_bytes']} B"),
+                           ('candidate_size', f"{c['aym2_bytes']} B"),
+                           ('saved_size', f"{c['saved_bytes']} B ({c['saved_percent']}%)"),
+                           ('dictionary_stats', f"{c['dictionary_entries']} / {c['dictionary_pointer_bytes'] + c['dictionary_body_bytes']} B"),
+                           ('stream_size', f"{c['stream_bytes']} B"),
+                           ('codec_version', c['codec_version'])])
         text.insert('end', '\n\n'.join(f'{self.tr(key)}:  {value}' for key, value in values))
         text.configure(state='disabled')
         losses = ttk.Frame(notebook, padding=12)
